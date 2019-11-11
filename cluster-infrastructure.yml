@@ -1,0 +1,423 @@
+AWSTemplateFormatVersion: 2010-09-09
+Description: "Base infrastructure required for an AWS ParallelCluster"
+
+Parameters:
+  KeyPair:
+    Type: String
+    Description: EC2 KeyPair to enable SSH access
+    ConstraintDescription: Must be an existing, valid EC2 KeyPair
+  ComputeNodeInstanceType:
+    Type: String
+    Default: t3.medium
+    AllowedValues:
+      - t3.medium
+      - m5.large
+      - c5n.18xlarge
+    Description: Computer node EC2 instance type (Default is t3.medium)
+    ConstraintDescription: Must be a valid EC2 instance type
+  MasterNodeInstanceType:
+    Type: String
+    Default: t3.medium
+    AllowedValues:
+      - t3.medium
+      - m5.large
+      - c5n.18xlarge
+    Description: Head node EC2 instance type (Default is t3.medium)
+    ConstraintDescription: Must be a valid EC2 instance type
+  BucketName:
+    Type: String
+    Description: S3 bucket name
+
+Mappings:
+  SubnetConfig:
+    VPC:
+      CIDR: 10.0.0.0/16
+    Public:
+      CIDR: 10.0.0.0/24
+    Private:
+      CIDR: 10.0.1.0/24
+  AWSInstanceType2Arch:
+    t3.medium:
+      Arch: HVM64
+    m5.laargee:
+      Arch: HVM64
+    c5n.18xlarge:
+      Arch: HVM64
+  AWSRegionArch2AMI:
+    us-east-1:
+      HVM64: ami-02eac2c0129f6376b
+
+
+Resources:
+
+  VPC:
+    Type: AWS::EC2::VPC
+    Properties:
+      EnableDnsSupport: true
+      EnableDnsHostnames: true
+      CidrBlock:
+        Fn::FindInMap:
+          - SubnetConfig
+          - VPC
+          - CIDR
+      Tags:
+        - Key: Name
+          Value: "AWS ParallelCluster VPC"
+        - Key: Application
+          Value: !Ref AWS::StackName
+
+  InternetGateway:
+    Type: AWS::EC2::InternetGateway
+    DependsOn: VPC
+    Properties:
+      Tags:
+        - Key: Name
+          Value: "ParallelCluster VPC IGW"
+        - Key: Application
+          Value: !Ref AWS::StackName
+
+  AttachGateway:
+    Type: AWS::EC2::VPCGatewayAttachment
+    Properties:
+      VpcId: !Ref VPC
+      InternetGatewayId: !Ref InternetGateway
+
+  PublicSubnet:
+    Type: AWS::EC2::Subnet
+    DependsOn: AttachGateway
+    Properties:
+      VpcId: !Ref VPC
+      MapPublicIpOnLaunch: true
+      AvailabilityZone:
+        Fn::Select:
+          - 0
+          - Fn::GetAZs: ""
+      CidrBlock:
+        Fn::FindInMap:
+          - SubnetConfig
+          - Public
+          - CIDR
+      Tags:
+        - Key: Name
+          Value: "Cluster Public Subnet"
+        - Key: Application
+          Value: !Ref AWS::StackName
+
+  PublicRouteTable:
+    Type: AWS::EC2::RouteTable
+    DependsOn:
+      - VPC
+      - AttachGateway
+    Properties:
+      VpcId: !Ref VPC
+      Tags:
+        - Key: Name
+          Value: "Cluster Public Route Table"
+        - Key: Application
+          Value: !Ref AWS::StackName
+
+  PublicRoute:
+    Type: AWS::EC2::Route
+    DependsOn: AttachGateway
+    Properties:
+      RouteTableId: !Ref PublicRouteTable
+      DestinationCidrBlock: 0.0.0.0/0
+      GatewayId: !Ref InternetGateway
+
+  PublicSubnetRouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    DependsOn: AttachGateway
+    Properties:
+      SubnetId: !Ref PublicSubnet
+      RouteTableId: !Ref PublicRouteTable
+
+  NATGateway:
+    Type: AWS::EC2::NatGateway
+    DependsOn: NATGatewayEIP
+    Properties:
+      SubnetId: !Ref PublicSubnet
+      AllocationId:
+        Fn::GetAtt:
+          - NATGatewayEIP
+          - AllocationId
+      Tags:
+        - Key: Name
+          Value: "Cluster NATGW"
+        - Key: Application
+          Value: !Ref AWS::StackName
+
+  NATGatewayEIP:
+    Type: AWS::EC2::EIP
+    Properties:
+      Domain: vpc
+
+  PrivateSubnet:
+    Type: AWS::EC2::Subnet
+    DependsOn:
+      - PrivateRoute
+    Properties:
+      VpcId: !Ref VPC
+      MapPublicIpOnLaunch: false
+      AvailabilityZone:
+        Fn::Select:
+          - 0
+          - Fn::GetAZs: ""
+      CidrBlock:
+        Fn::FindInMap:
+          - SubnetConfig
+          - Private
+          - CIDR
+      Tags:
+        - Key: Name
+          Value: "Cluster Private Subnet"
+        - Key: Application
+          Value: !Ref AWS::StackName
+
+  PrivateRouteTable:
+    Type: AWS::EC2::RouteTable
+    DependsOn: NATGateway
+    Properties:
+      VpcId: !Ref VPC
+      Tags:
+        - Key: Name
+          Value: "Cluster Private RT"
+        - Key: Application
+          Value: !Ref AWS::StackName
+
+  PrivateRoute:
+    Type: AWS::EC2::Route
+    DependsOn:
+      - PrivateRouteTable
+    Properties:
+      RouteTableId: !Ref PrivateRouteTable
+      DestinationCidrBlock: 0.0.0.0/0
+      NatGatewayId: !Ref NATGateway
+
+  PrivateSubnetRouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    DependsOn: PrivateSubnet
+    Properties:
+      SubnetId: !Ref PrivateSubnet
+      RouteTableId: !Ref PrivateRouteTable
+
+  SecurityGroupBastion:
+    Type: AWS::EC2::SecurityGroup
+    DependsOn: PrivateRoute
+    Properties:
+      GroupDescription: SecurityGroup for bastion instance (allow ssh from anywhere)
+      VpcId: !Ref VPC
+      SecurityGroupIngress:
+      - IpProtocol: tcp
+        FromPort: '22'
+        ToPort: '22'
+        CidrIp: 0.0.0.0/0
+      - IpProtocol: tcp
+        FromPort: '443'
+        ToPort: '443'
+        CidrIp: 0.0.0.0/0
+      Tags:
+        - Key: Name
+          Value: BastionInstanceSG
+        - Key: Application
+          Value: !Ref AWS::StackName
+
+  SecurityGroupCluster:
+    Type: AWS::EC2::SecurityGroup
+    DependsOn: SecurityGroupBastion
+    Properties:
+      GroupDescription: SecurityGroup for ParallelCluster
+      VpcId: !Ref VPC
+      SecurityGroupIngress:
+      - IpProtocol: tcp
+        FromPort: '0'
+        ToPort: '65535'
+        SourceSecurityGroupId: !Ref SecurityGroupBastion
+      - IpProtocol: tcp
+        FromPort: '22'
+        ToPort: '22'
+        CidrIp:
+          Fn::FindInMap:
+            - SubnetConfig
+            - Public
+            - CIDR
+      Tags:
+        - Key: Name
+          Value: ParallelClusterSG
+        - Key: Application
+          Value: !Ref AWS::StackName
+
+  SecurityGroupBastionIngress:
+    Type: AWS::EC2::SecurityGroupIngress
+    DependsOn: SecurityGroupCluster
+    Properties:
+      GroupId: !Ref SecurityGroupCluster
+      IpProtocol: tcp
+      FromPort: '0'
+      ToPort: '65535'
+      SourceSecurityGroupId: !Ref SecurityGroupCluster
+
+  S3Bucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Ref BucketName
+
+  CodePipelineServiceRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: codepipeline.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/AdministratorAccess
+      Path: /service-role/
+
+  CodeDeployServiceRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: codedeploy.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSCodeDeployRole
+      Path: /service-role/
+
+  ClusterRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: ec2.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/AdministratorAccess
+      Path: /
+
+  ClusterInstanceProfile:
+    Type: AWS::IAM::InstanceProfile
+    Properties:
+      Path: /
+      Roles:
+        - !Ref ClusterRole
+
+  BastionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: ec2.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/AdministratorAccess
+        - arn:aws:iam::aws:policy/service-role/AWSCodeDeployRole
+      Path: /
+
+  BastionInstanceProfile:
+    Type: AWS::IAM::InstanceProfile
+    Properties:
+      Path: /
+      Roles:
+        - !Ref BastionRole
+
+  BastionEC2:
+    Type: AWS::EC2::Instance
+    DependsOn:
+      - SecurityGroupBastion
+      - BastionInstanceProfile
+    Properties:
+      ImageId: !FindInMap [RegionMap, !Ref "AWS::Region", centos7imgid]
+      InstanceType: !Ref InstanceTypeParameter
+      IamInstanceProfile: !Ref BastionInstanceProfile
+      KeyName: !Ref KeyPairName
+      SecurityGroupIds:
+        - Ref: "SecurityGroupBastion"
+      SubnetId: !Ref PublicSubnet
+      BlockDeviceMappings:
+        - DeviceName: "/dev/sda1"
+          Ebs:
+            VolumeType: "gp2"
+            VolumeSize: "50"
+            DeleteOnTermination: "true"
+      Tags:
+        - Key: Name
+          Value: CentOS7 Bastion
+      UserData:
+        Fn::Base64: !Sub |
+          #!/bin/bash -xe
+          yum install -y git
+          cd /tmp
+          git clone https://github.com/porcaro33/aws-parallelcluster-workshop.git
+          cd aws-parallelcluster-workshop
+          chmod +x ./bastion_setup.sh
+          ./bastion_setup.sh
+
+  GitRepo:
+    Type: AWS::CodeCommit::Repository
+    Properties:
+      RepositoryDescription: pcluster-git
+      RepositoryName: pcluster-git
+
+  PclusterAdmin:
+    Type: AWS::IAM::User
+    Properties:
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/AdministratorAccess
+      UserName: pcluster-admin
+
+Outputs:
+    VPC:
+      Description: A VPC for AWS ParallelCluster
+      Value: !Ref VPC
+
+    PublicSubnet:
+      Description: Public subnet for AWS ParallelCluster
+      Value: !Ref PublicSubnet
+
+    PrivateSubnet:
+      Description: Private subnet for AWS ParallelCluster
+      Value: !Ref PrivateSubnet
+
+    BastionInstanceProfile:
+      Description: Instance role for ParallelCluster
+      Value: !GetAtt BastionInstanceProfile.Arn
+
+    ClusterRole:
+      Description: Instance role for ParallelCluster
+      Value: !GetAtt ClusterRole.Arn
+
+    SecurityGroupBastion:
+      Description: Security group for bastion server
+      Value: !Ref SecurityGroupBastion
+
+    SecurityGroupCluster:
+      Description: Security group for ParallelCluster
+      Value: !Ref SecurityGroupCluster
+
+    S3Bucket:
+      Description: S3 bucket for ParallelCluster
+      Value: !Ref S3Bucket
+
+    BastionEC2:
+      Description: Bastion EC2
+      Value: !GetAtt BastionEC2.PublicIp
+
+    GitRepoSSH:
+      Description: CodeCommit
+      Value: !GetAtt GitRepo.CloneUrlSsh
+
+    PclusterAdmin:
+      Description: IAM User - ParallelCluster Admin
+      Value: !GetAtt PclusterAdmin.Arn
