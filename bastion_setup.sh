@@ -1,21 +1,15 @@
 #!/bin/bash
-# setup awscli, parallelcluster on CentOS7
-
-# install yum repo
-yum install -y epel-release centos-release-scl
+# setup awscli, parallelcluster on Ubuntu 18.04
 
 # install basic tools
-yum install -y wget python-pip zstd bzip2 zip unzip jq tree net-tools rsync traceroute telnet
-yum groupinstall -y "Development tools"
+apt-get install -y wget ruby python-pip zstd bzip2 zip unzip jq rsync build-essential
 
 # install awscli and parallelcluster
-pip install -U pip
 pip install awscli aws-parallelcluster
 
 # codedeploy agent
-yum install -y ruby wget
 cd /tmp
 wget https://aws-codedeploy-us-east-1.s3.us-east-1.amazonaws.com/latest/install
 chmod +x ./install
-sudo ./install auto
-sudo systemctl restart codedeploy-agent
+./install auto
+systemctl restart codedeploy-agent

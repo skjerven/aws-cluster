@@ -1,28 +1,17 @@
 AWSTemplateFormatVersion: 2010-09-09
 Description: "Base infrastructure required for an AWS ParallelCluster"
-
 Parameters:
-  KeyPair:
+  KeyPairName:
     Type: String
-    Description: EC2 KeyPair to enable SSH access
-    ConstraintDescription: Must be an existing, valid EC2 KeyPair
-  ComputeNodeInstanceType:
-    Type: String
-    Default: t3.medium
-    AllowedValues:
-      - t3.medium
-      - m5.large
-      - c5n.18xlarge
-    Description: Computer node EC2 instance type (Default is t3.medium)
-    ConstraintDescription: Must be a valid EC2 instance type
-  MasterNodeInstanceType:
+    Description: AWS KeyPair name
+  BastionInstanceType:
     Type: String
     Default: t3.medium
     AllowedValues:
       - t3.medium
       - m5.large
       - c5n.18xlarge
-    Description: Head node EC2 instance type (Default is t3.medium)
+    Description: Bastion Host EC2 instance type (Default is t3.medium)
     ConstraintDescription: Must be a valid EC2 instance type
   BucketName:
     Type: String
@@ -36,20 +25,11 @@ Mappings:
       CIDR: 10.0.0.0/24
     Private:
       CIDR: 10.0.1.0/24
-  AWSInstanceType2Arch:
-    t3.medium:
-      Arch: HVM64
-    m5.laargee:
-      Arch: HVM64
-    c5n.18xlarge:
-      Arch: HVM64
-  AWSRegionArch2AMI:
+  RegionMap:
     us-east-1:
-      HVM64: ami-02eac2c0129f6376b
+      "ubuntuImgID": "ami-04b9e92b5572fa0d1"
 
-
-Resources:
-
+Resource:
   VPC:
     Type: AWS::EC2::VPC
     Properties:
@@ -208,12 +188,12 @@ Resources:
       VpcId: !Ref VPC
       SecurityGroupIngress:
       - IpProtocol: tcp
-        FromPort: '22'
-        ToPort: '22'
+        FromPort: 22
+        ToPort: 22
         CidrIp: 0.0.0.0/0
       - IpProtocol: tcp
-        FromPort: '443'
-        ToPort: '443'
+        FromPort: 443
+        ToPort: 443
         CidrIp: 0.0.0.0/0
       Tags:
         - Key: Name
@@ -229,12 +209,12 @@ Resources:
       VpcId: !Ref VPC
       SecurityGroupIngress:
       - IpProtocol: tcp
-        FromPort: '0'
-        ToPort: '65535'
+        FromPort: 0
+        ToPort: 65535
         SourceSecurityGroupId: !Ref SecurityGroupBastion
       - IpProtocol: tcp
-        FromPort: '22'
-        ToPort: '22'
+        FromPort: 22
+        ToPort: 22
         CidrIp:
           Fn::FindInMap:
             - SubnetConfig
@@ -252,8 +232,8 @@ Resources:
     Properties:
       GroupId: !Ref SecurityGroupCluster
       IpProtocol: tcp
-      FromPort: '0'
-      ToPort: '65535'
+      FromPort: 0
+      ToPort: 65535
       SourceSecurityGroupId: !Ref SecurityGroupCluster
 
   S3Bucket:
@@ -338,8 +318,8 @@ Resources:
       - SecurityGroupBastion
       - BastionInstanceProfile
     Properties:
-      ImageId: !FindInMap [RegionMap, !Ref "AWS::Region", centos7imgid]
-      InstanceType: !Ref InstanceTypeParameter
+      ImageId: !FindInMap [RegionMap, !Ref "AWS::Region", ubuntuImgID]
+      InstanceType: !Ref BastionInstanceType
       IamInstanceProfile: !Ref BastionInstanceProfile
       KeyName: !Ref KeyPairName
       SecurityGroupIds:
@@ -353,14 +333,16 @@ Resources:
             DeleteOnTermination: "true"
       Tags:
         - Key: Name
-          Value: CentOS7 Bastion
+          Value: Bastion Host
       UserData:
         Fn::Base64: !Sub |
-          #!/bin/bash -xe
-          yum install -y git
+          #!/bin/bash
+          apt-get update
+          apt-get -y upgrade
+          apt-get -y install git
           cd /tmp
-          git clone https://github.com/porcaro33/aws-parallelcluster-workshop.git
-          cd aws-parallelcluster-workshop
+          git clone https://github.com/skjerven/aws-cluster.git
+          cd aws-cluster
           chmod +x ./bastion_setup.sh
           ./bastion_setup.sh
 
