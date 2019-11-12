@@ -29,7 +29,7 @@ Mappings:
     us-east-1:
       "ubuntuImgID": "ami-04b9e92b5572fa0d1"
 
-Resource:
+Resources:
   VPC:
     Type: AWS::EC2::VPC
     Properties:
