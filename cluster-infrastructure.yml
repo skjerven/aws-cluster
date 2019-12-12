@@ -1,21 +1,5 @@
 AWSTemplateFormatVersion: 2010-09-09
 Description: "Base infrastructure required for an AWS ParallelCluster"
-Parameters:
-  KeyPairName:
-    Type: String
-    Description: AWS KeyPair name
-  BastionInstanceType:
-    Type: String
-    Default: t3.medium
-    AllowedValues:
-      - t3.medium
-      - m5.large
-      - c5n.18xlarge
-    Description: Bastion Host EC2 instance type (Default is t3.medium)
-    ConstraintDescription: Must be a valid EC2 instance type
-  BucketName:
-    Type: String
-    Description: S3 bucket name
 
 Mappings:
   SubnetConfig:
@@ -25,9 +9,6 @@ Mappings:
       CIDR: 10.0.0.0/24
     Private:
       CIDR: 10.0.1.0/24
-  RegionMap:
-    us-east-1:
-      "ubuntuImgID": "ami-04b9e92b5572fa0d1"
 
 Resources:
   VPC:
@@ -85,9 +66,7 @@ Resources:
 
   PublicRouteTable:
     Type: AWS::EC2::RouteTable
-    DependsOn:
-      - VPC
-      - AttachGateway
+    DependsOn: AttachGateway
     Properties:
       VpcId: !Ref VPC
       Tags:
@@ -113,7 +92,6 @@ Resources:
 
   NATGateway:
     Type: AWS::EC2::NatGateway
-    DependsOn: NATGatewayEIP
     Properties:
       SubnetId: !Ref PublicSubnet
       AllocationId:
@@ -166,8 +144,6 @@ Resources:
 
   PrivateRoute:
     Type: AWS::EC2::Route
-    DependsOn:
-      - PrivateRouteTable
     Properties:
       RouteTableId: !Ref PrivateRouteTable
       DestinationCidrBlock: 0.0.0.0/0
@@ -175,35 +151,12 @@ Resources:
 
   PrivateSubnetRouteTableAssociation:
     Type: AWS::EC2::SubnetRouteTableAssociation
-    DependsOn: PrivateSubnet
     Properties:
       SubnetId: !Ref PrivateSubnet
       RouteTableId: !Ref PrivateRouteTable
 
-  SecurityGroupBastion:
-    Type: AWS::EC2::SecurityGroup
-    DependsOn: PrivateRoute
-    Properties:
-      GroupDescription: SecurityGroup for bastion instance (allow ssh from anywhere)
-      VpcId: !Ref VPC
-      SecurityGroupIngress:
-      - IpProtocol: tcp
-        FromPort: 22
-        ToPort: 22
-        CidrIp: 0.0.0.0/0
-      - IpProtocol: tcp
-        FromPort: 443
-        ToPort: 443
-        CidrIp: 0.0.0.0/0
-      Tags:
-        - Key: Name
-          Value: BastionInstanceSG
-        - Key: Application
-          Value: !Ref AWS::StackName
-
   SecurityGroupCluster:
     Type: AWS::EC2::SecurityGroup
-    DependsOn: SecurityGroupBastion
     Properties:
       GroupDescription: SecurityGroup for ParallelCluster
       VpcId: !Ref VPC
@@ -211,7 +164,6 @@ Resources:
       - IpProtocol: tcp
         FromPort: 0
         ToPort: 65535
-        SourceSecurityGroupId: !Ref SecurityGroupBastion
       - IpProtocol: tcp
         FromPort: 22
         ToPort: 22
@@ -226,139 +178,6 @@ Resources:
         - Key: Application
           Value: !Ref AWS::StackName
 
-  SecurityGroupBastionIngress:
-    Type: AWS::EC2::SecurityGroupIngress
-    DependsOn: SecurityGroupCluster
-    Properties:
-      GroupId: !Ref SecurityGroupCluster
-      IpProtocol: tcp
-      FromPort: 0
-      ToPort: 65535
-      SourceSecurityGroupId: !Ref SecurityGroupCluster
-
-  S3Bucket:
-    Type: AWS::S3::Bucket
-    Properties:
-      BucketName: !Ref BucketName
-
-  CodePipelineServiceRole:
-    Type: AWS::IAM::Role
-    Properties:
-      AssumeRolePolicyDocument:
-        Version: "2012-10-17"
-        Statement:
-          - Effect: Allow
-            Principal:
-              Service: codepipeline.amazonaws.com
-            Action: sts:AssumeRole
-      ManagedPolicyArns:
-        - arn:aws:iam::aws:policy/AdministratorAccess
-      Path: /service-role/
-
-  CodeDeployServiceRole:
-    Type: AWS::IAM::Role
-    Properties:
-      AssumeRolePolicyDocument:
-        Version: "2012-10-17"
-        Statement:
-          - Effect: Allow
-            Principal:
-              Service: codedeploy.amazonaws.com
-            Action: sts:AssumeRole
-      ManagedPolicyArns:
-        - arn:aws:iam::aws:policy/service-role/AWSCodeDeployRole
-      Path: /service-role/
-
-  ClusterRole:
-    Type: AWS::IAM::Role
-    Properties:
-      AssumeRolePolicyDocument:
-        Version: "2012-10-17"
-        Statement:
-          - Effect: Allow
-            Principal:
-              Service: ec2.amazonaws.com
-            Action: sts:AssumeRole
-      ManagedPolicyArns:
-        - arn:aws:iam::aws:policy/AdministratorAccess
-      Path: /
-
-  ClusterInstanceProfile:
-    Type: AWS::IAM::InstanceProfile
-    Properties:
-      Path: /
-      Roles:
-        - !Ref ClusterRole
-
-  BastionRole:
-    Type: AWS::IAM::Role
-    Properties:
-      AssumeRolePolicyDocument:
-        Version: "2012-10-17"
-        Statement:
-          - Effect: Allow
-            Principal:
-              Service: ec2.amazonaws.com
-            Action: sts:AssumeRole
-      ManagedPolicyArns:
-        - arn:aws:iam::aws:policy/AdministratorAccess
-        - arn:aws:iam::aws:policy/service-role/AWSCodeDeployRole
-      Path: /
-
-  BastionInstanceProfile:
-    Type: AWS::IAM::InstanceProfile
-    Properties:
-      Path: /
-      Roles:
-        - !Ref BastionRole
-
-  BastionEC2:
-    Type: AWS::EC2::Instance
-    DependsOn:
-      - SecurityGroupBastion
-      - BastionInstanceProfile
-    Properties:
-      ImageId: !FindInMap [RegionMap, !Ref "AWS::Region", ubuntuImgID]
-      InstanceType: !Ref BastionInstanceType
-      IamInstanceProfile: !Ref BastionInstanceProfile
-      KeyName: !Ref KeyPairName
-      SecurityGroupIds:
-        - Ref: "SecurityGroupBastion"
-      SubnetId: !Ref PublicSubnet
-      BlockDeviceMappings:
-        - DeviceName: "/dev/sda1"
-          Ebs:
-            VolumeType: "gp2"
-            VolumeSize: "50"
-            DeleteOnTermination: "true"
-      Tags:
-        - Key: Name
-          Value: Bastion Host
-      UserData:
-        Fn::Base64: !Sub |
-          #!/bin/bash
-          apt-get update
-          apt-get -y upgrade
-          apt-get -y install git
-          cd /tmp
-          git clone https://github.com/skjerven/aws-cluster.git
-          cd aws-cluster
-          chmod +x ./bastion_setup.sh
-          ./bastion_setup.sh
-
-  GitRepo:
-    Type: AWS::CodeCommit::Repository
-    Properties:
-      RepositoryDescription: pcluster-git
-      RepositoryName: pcluster-git
-
-  PclusterAdmin:
-    Type: AWS::IAM::User
-    Properties:
-      ManagedPolicyArns:
-        - arn:aws:iam::aws:policy/AdministratorAccess
-      UserName: pcluster-admin
-
 Outputs:
     VPC:
       Description: A VPC for AWS ParallelCluster
@@ -372,34 +191,6 @@ Outputs:
       Description: Private subnet for AWS ParallelCluster
       Value: !Ref PrivateSubnet
 
-    BastionInstanceProfile:
-      Description: Instance role for ParallelCluster
-      Value: !GetAtt BastionInstanceProfile.Arn
-
-    ClusterRole:
-      Description: Instance role for ParallelCluster
-      Value: !GetAtt ClusterRole.Arn
-
-    SecurityGroupBastion:
-      Description: Security group for bastion server
-      Value: !Ref SecurityGroupBastion
-
     SecurityGroupCluster:
       Description: Security group for ParallelCluster
       Value: !Ref SecurityGroupCluster
-
-    S3Bucket:
-      Description: S3 bucket for ParallelCluster
-      Value: !Ref S3Bucket
-
-    BastionEC2:
-      Description: Bastion EC2
-      Value: !GetAtt BastionEC2.PublicIp
-
-    GitRepoSSH:
-      Description: CodeCommit
-      Value: !GetAtt GitRepo.CloneUrlSsh
-
-    PclusterAdmin:
-      Description: IAM User - ParallelCluster Admin
-      Value: !GetAtt PclusterAdmin.Arn

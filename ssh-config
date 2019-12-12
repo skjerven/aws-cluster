@@ -1,3 +1,0 @@
-Host git-codecommit.*.amazonaws.com
-  User pcluster-admin
-  IdentityFile ~/.ssh/codecommit_rsa
